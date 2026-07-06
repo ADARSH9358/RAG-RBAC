@@ -1,0 +1,55 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+app/venv/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment/secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Project secrets file
+app/rag_utils/secret_key.py
+
+# Local databases and vector store
+# roles_docs.db
+# static/data/structured_queries.duckdb
+# chroma_db/
+
+# Runtime/generated content
+# static/uploads/
+# videos/
+# report.html
+
+# OS files
+# .DS_Store
+# Thumbs.db
