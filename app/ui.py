@@ -178,7 +178,10 @@ if st.session_state.page == "main":
                 )
                 
                 if res.ok:
-                    st.success(res.json()["message"])
+                    payload = res.json()
+                    st.success(payload["message"])
+                    if payload.get("warning"):
+                        st.warning(payload["warning"])
                 else:
                     st.error(res.json().get("detail", "Something went wrong."))
 

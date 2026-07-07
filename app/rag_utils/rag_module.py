@@ -5,6 +5,7 @@ import pandas as pd
 from collections import defaultdict
 from langchain_core.documents import Document
 import sqlite3
+import chromadb
 
 
 from langchain_community.document_loaders import UnstructuredMarkdownLoader
@@ -36,11 +37,29 @@ os.environ["LANGCHAIN_PROJECT"] = "RAG"
 huggingface_embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
-vectorstore = Chroma(
-    collection_name="my_collection",
-    persist_directory="chroma_db",
-    embedding_function=huggingface_embeddings
+# vectorstore = Chroma(
+#     collection_name="my_collection",
+#     persist_directory="chroma_db",
+#     embedding_function=huggingface_embeddings
+# )
+
+
+chroma_client = chromadb.CloudClient(
+    tenant=os.getenv("CHROMA_TENANT"),
+    database=os.getenv("CHROMA_DATABASE"),
+    api_key=os.getenv("CROMA_API_KEY"),   # note: typo in your .env — CROMA not CHROMA
 )
+
+vectorstore = Chroma(
+    client=chroma_client,
+    collection_name="my_collection",
+    embedding_function=huggingface_embeddings,
+)
+
+
+def _is_quota_exceeded_error(err: Exception) -> bool:
+    message = str(err).lower()
+    return "quota exceeded" in message and "upsert" in message
 
 
 def embed_documents_to_vectorstore(docs):
@@ -91,29 +110,63 @@ def load_file(filepath, role):
 
 
 def run_indexer():
-    conn = sqlite3.connect("roles_docs.db")
+    from .turso_client import connect as turso_connect
+    conn = turso_connect()
     c = conn.cursor()
     c.execute("SELECT id, filepath, role FROM documents WHERE embedded = 0")
-    
-    all_docs = []
+    pending_rows = c.fetchall()
 
-    for doc_id, path, role in c.fetchall():
-        docs = load_file(path, role)
-        if docs:
+    all_docs = []
+    embedded_doc_ids = []
+
+    try:
+        for doc_id, path, role in pending_rows:
+            docs = load_file(path, role)
+            if not docs:
+                continue
+
             if isinstance(docs, list):
                 all_docs.extend(docs)
             else:
                 all_docs.append(docs)
+            embedded_doc_ids.append(doc_id)
 
-            # Mark this file as embedded
+        if not all_docs:
+            return {
+                "indexed_chunks": 0,
+                "indexed_docs": 0,
+                "pending_docs": len(pending_rows),
+                "quota_exceeded": False,
+            }
+
+        embed_documents_to_vectorstore(all_docs)
+
+        for doc_id in embedded_doc_ids:
             c.execute("UPDATE documents SET embedded = 1 WHERE id = ?", (doc_id,))
 
-    if all_docs:
-        embed_documents_to_vectorstore(all_docs)
         conn.commit()
+        print(f"Indexed {len(all_docs)} document chunks.")
+        return {
+            "indexed_chunks": len(all_docs),
+            "indexed_docs": len(embedded_doc_ids),
+            "pending_docs": max(len(pending_rows) - len(embedded_doc_ids), 0),
+            "quota_exceeded": False,
+        }
 
-    conn.close()
-    print(f"Indexed {len(all_docs)} document chunks.")
+    except Exception as e:
+        if _is_quota_exceeded_error(e):
+            conn.rollback()
+            print(f"⚠️ Index skipped due to Chroma quota: {e}")
+            return {
+                "indexed_chunks": 0,
+                "indexed_docs": 0,
+                "pending_docs": len(pending_rows),
+                "quota_exceeded": True,
+                "error": str(e),
+            }
+        raise
+    finally:
+        conn.close()
 
 
 # ==============================
@@ -141,7 +194,7 @@ chat_prompt = ChatPromptTemplate.from_messages([
 # ==============================
 model = ChatOpenAI(
     model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-    api_key=os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY"),
+    api_key=openapi_key,
     base_url="https://api.groq.com/openai/v1",
     temperature=0.2
 )

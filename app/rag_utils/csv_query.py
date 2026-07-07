@@ -1,17 +1,33 @@
 import re
 import duckdb
-import os,tabulate
+import os
+import tabulate
 from openai import OpenAI
-import sqlite3
+from .turso_client import connect as turso_connect
 from pathlib import Path
 
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DB_PATH = os.path.join(BASE_DIR, "roles_docs.db")
+DUCKDB_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "static", "data", "structured_queries.duckdb")
+os.makedirs(os.path.dirname(DUCKDB_FILE), exist_ok=True)
 
-# DuckDB setup
-DUCKDB_FILE = "static/data/structured_queries.duckdb"
-duck_conn = duckdb.connect(DUCKDB_FILE, read_only=False)
+if not os.path.exists(DUCKDB_FILE):
+    duckdb.connect(DUCKDB_FILE).close()
+
+duck_conn = None
+
+def get_duck_conn():
+    global duck_conn
+    if duck_conn is not None:
+        return duck_conn
+
+    # Use a single consistent connection mode across the app process.
+    # Mixing read_only and read_write connections for the same DB file raises
+    # "different configuration than existing connections" in DuckDB.
+    duck_conn = duckdb.connect(DUCKDB_FILE)
+    print("✅ DuckDB initialized")
+
+    return duck_conn
+
 
 # OpenAI setup
 client = OpenAI(
@@ -21,18 +37,19 @@ client = OpenAI(
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 def get_allowed_tables_for_role(role: str) -> list[str]:
+    conn = get_duck_conn()
     if role.lower() == "c-level":
         query = "SELECT table_name FROM tables_metadata"
-        return [row[0] for row in duck_conn.execute(query).fetchall()]
+        return [row[0] for row in conn.execute(query).fetchall()]
     elif role.lower() == "general":
         query = "SELECT table_name FROM tables_metadata WHERE role = 'general'"
-        return [row[0] for row in duck_conn.execute(query).fetchall()]
+        return [row[0] for row in conn.execute(query).fetchall()]
     else:
         query = """
         SELECT table_name FROM tables_metadata
         WHERE role = ? OR role = 'general'
         """
-        return [row[0] for row in duck_conn.execute(query, [role]).fetchall()]
+        return [row[0] for row in conn.execute(query, [role]).fetchall()]
 
 def extract_tables_from_sql(sql: str) -> list[str]:
     # Extract tables used in FROM and JOIN clauses
@@ -49,8 +66,8 @@ def is_safe_query(sql: str) -> bool:
 
 def translate_nl_to_sql(question: str, allowed_tables: list[str]) -> str:
     print("translate_nl_to_sql() called")
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    print("Using DB path:", DB_PATH)
+    conn = turso_connect()
+    print("Connecting to Turso deployed DB")
     cur = conn.cursor()
 
     # fetch headers from table
@@ -66,7 +83,10 @@ def translate_nl_to_sql(question: str, allowed_tables: list[str]) -> str:
     for filename, headers_str in rows:
         try:
             print("inside schemas")
-            table_name = Path(filename).stem.replace("-", "_")
+            raw_table_name = Path(filename).stem
+            table_name = re.sub(r"[^0-9a-zA-Z_]", "_", raw_table_name)
+            if not table_name or table_name[0].isdigit():
+                table_name = f"table_{table_name}" if table_name else "table_uploaded"
             print(table_name)
             cols = ", ".join(headers_str.split(","))
             print(cols)
@@ -120,6 +140,7 @@ def translate_nl_to_sql(question: str, allowed_tables: list[str]) -> str:
 
 #async def ask_csv(question: str, role: str) -> dict:
 async def ask_csv(question: str, role: str, username: str, return_sql: bool = False) -> dict:
+    conn = get_duck_conn()
     allowed_tables = get_allowed_tables_for_role(role)
 
     try:
@@ -136,8 +157,8 @@ async def ask_csv(question: str, role: str, username: str, return_sql: bool = Fa
             if table not in allowed_tables:
                 return {"answer": f"Access denied to table: {table}", "error": True}
 
-        result = duck_conn.execute(sql).fetchall()
-        columns = [desc[0] for desc in duck_conn.description]
+        result = conn.execute(sql).fetchall()
+        columns = [desc[0] for desc in conn.description]
         output = [list(row) for row in result]
 
         markdown_table = tabulate.tabulate(output, headers=columns, tablefmt="github")
