@@ -1,53 +1,44 @@
-# ========== CONFIG ==========
-from pathlib import Path
+# ==========================================
+# ============== 1. CONFIG =================
+# ==========================================
 import os
-import pandas as pd
-from collections import defaultdict
-from langchain_core.documents import Document
 import sqlite3
+from collections import defaultdict
+from pathlib import Path
+
 import chromadb
-
-
-from langchain_community.document_loaders import UnstructuredMarkdownLoader
+import pandas as pd
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_compressors import CohereRerank
+from langchain_community.document_loaders import UnstructuredMarkdownLoader
 from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_classic.chains import create_retrieval_chain
 
-# from .secret_key import openapi_key,langchain_key,cohere_api_key
-
-
-
+# Set tracing environment variables immediately
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
 os.environ["LANGCHAIN_PROJECT"] = "RAG"
-# os.environ["LANGCHAIN_API_KEY"] = langchain_key
-# os.environ["OPENAI_API_KEY"] = openapi_key
-openapi_key = os.environ["GROQ_API_KEY"]
-# os.environ["COHERE_API_KEY"] = cohere_api_key
 
+# Initialize your API Key first so it's globally available below
+openapi_key = os.environ.get("GROQ_API_KEY", "")
 
-# ==============================
-# ====Split,load,embed==========
-# ==============================
-
+# ==========================================
+# ====== 2. EMBEDDINGS & VECTORSTORE =======
+# ==========================================
 huggingface_embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
-# vectorstore = Chroma(
-#     collection_name="my_collection",
-#     persist_directory="chroma_db",
-#     embedding_function=huggingface_embeddings
-# )
-
 
 chroma_client = chromadb.CloudClient(
     tenant=os.getenv("CHROMA_TENANT"),
     database=os.getenv("CHROMA_DATABASE"),
-    api_key=os.getenv("CROMA_API_KEY"),   # note: typo in your .env — CROMA not CHROMA
+    api_key=os.getenv("CROMA_API_KEY"),   # Note: matching your existing typo configuration (CROMA)
 )
 
 vectorstore = Chroma(
@@ -57,6 +48,9 @@ vectorstore = Chroma(
 )
 
 
+# ==========================================
+# =========== 3. UTILITY METHODS ===========
+# ==========================================
 def _is_quota_exceeded_error(err: Exception) -> bool:
     message = str(err).lower()
     return "quota exceeded" in message and "upsert" in message
@@ -69,11 +63,6 @@ def embed_documents_to_vectorstore(docs):
     
     print("Documents embedded and saved to vectorstore.")
     print("Total documents:", len(vectorstore.get()["documents"]))
-    #print("Chunks being added:")
-    #for chunk in splits:
-    #    print(f"---\n{chunk.page_content[:150]}...\nMetadata: {chunk.metadata}")
-
-
 
 
 def load_file(filepath, role):
@@ -90,7 +79,7 @@ def load_file(filepath, role):
                         metadata={"role": role.lower(), "source": Path(filepath).name}
                     )
                 )
-            return documents  # Return a list of documents
+            return documents
 
         elif ext == ".md":
             with open(filepath, "r", encoding="utf-8") as f:
@@ -169,9 +158,9 @@ def run_indexer():
         conn.close()
 
 
-# ==============================
-# ========== PROMPT TEMPLATE ==========
-# ==============================
+# ==========================================
+# ========== 4. PROMPT TEMPLATE ===========
+# ==========================================
 system_prompt = (
     "You are an assistant for summarizing and answering queries from internal company documents.\n"
     "Always use the retrieved context to answer the query, even if partial.\n"
@@ -189,9 +178,10 @@ chat_prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}"),
 ])
 
-# ==============================
-# ========== MODEL ==========
-# ==============================
+
+# ==========================================
+# ============ 5. LLM MODEL ================
+# ==========================================
 model = ChatOpenAI(
     model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
     api_key=openapi_key,
@@ -201,31 +191,30 @@ model = ChatOpenAI(
 
 question_answering_chain = create_stuff_documents_chain(model, chat_prompt)
 
-# ==============================
-# Add a Reranker
-# ==============================
+
+# ==========================================
+# ============ 6. RERANK & CHAIN ===========
+# ==========================================
 def wrap_with_reranker(retriever, cohere_api_key, top_n=4):
-    #print("[INFO] Using Cohere reranker.")
     reranker = CohereRerank(cohere_api_key=cohere_api_key, top_n=top_n)
     return ContextualCompressionRetriever(
         base_compressor=reranker,
         base_retriever=retriever
     )
 
-def get_rag_chain(user_role: str,cohere_api_key: str = None):
+
+def get_rag_chain(user_role: str, cohere_api_key: str = None):
     user_role = user_role.lower()
 
     if user_role == "c-level":
         # C-level sees everything
         retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
-
     elif user_role == "general":
         # General role sees only general documents
         retriever = vectorstore.as_retriever(search_kwargs={
             "k": 4,
             "filter": {"role": "general"}
         })
-
     else:
         # All other roles see their docs + general
         retriever = vectorstore.as_retriever(search_kwargs={
@@ -235,40 +224,9 @@ def get_rag_chain(user_role: str,cohere_api_key: str = None):
             }
         })
 
-    # wrap with reranker
+    # Wrap with reranker if key is present
     if cohere_api_key:
         print("Using cohere reranker")
         retriever = wrap_with_reranker(retriever, cohere_api_key)
 
     return create_retrieval_chain(retriever, question_answering_chain)
-    """
-    from langchain_core.runnables import RunnableLambda, RunnableMap
-
-    extract_input = RunnableLambda(lambda x: x["input"])
-
-    return RunnableMap({
-        "context": extract_input | retriever,
-        "answer": extract_input | retriever | question_answering_chain
-    })"""
-
-
-"""
-# ========== MAIN EXECUTION ==========
-if __name__ == "__main__":
-    run_indexer() 
-"""
-    # ========== EXAMPLE USAGE ==========
-"""
-    user_role = "hr" 
-    rag_chain = get_rag_chain(user_role)
-
-    
-    query = "give me Campaign Highlights from marketing summary."
-    response = rag_chain.invoke({"input": query})
-
-    print((response["answer"]))
-    for doc in response.get("context", []):
-        print(f"Source: {doc.metadata['source']}, Role: {doc.metadata.get('role')}")
-
-"""
-
