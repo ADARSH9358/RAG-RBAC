@@ -8,7 +8,7 @@ from pathlib import Path
 
 import chromadb
 import pandas as pd
-from langchain.retrievers import ContextualCompressionRetriever
+
 from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
