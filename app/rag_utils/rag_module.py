@@ -10,15 +10,14 @@ import chromadb
 import pandas as pd
 
 from langchain_classic.chains import create_retrieval_chain
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_compressors import CohereRerank
 from langchain_community.document_loaders import UnstructuredMarkdownLoader
+from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains import create_retrieval_chain
 
 # Set tracing environment variables immediately
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
