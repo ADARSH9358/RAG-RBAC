@@ -26,7 +26,7 @@ os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
 os.environ["LANGCHAIN_PROJECT"] = "RAG"
 # os.environ["LANGCHAIN_API_KEY"] = langchain_key
 # os.environ["OPENAI_API_KEY"] = openapi_key
-# os.environ["GROQ_API_KEY"] = openapi_key
+openapi_key = os.environ["GROQ_API_KEY"]
 # os.environ["COHERE_API_KEY"] = cohere_api_key
 
 
